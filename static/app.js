@@ -27,20 +27,59 @@ function phrases(value) {
   return value.toLowerCase().split(",").map(item => item.trim()).filter(Boolean);
 }
 
+const keralaCities = [
+  "kochi", "cochin", "kakkanad", "ernakulam", "thiruvananthapuram", "trivandrum",
+  "kazhakkoottam", "kozhikode", "calicut", "thrissur", "trichur", "kollam",
+  "kottayam", "kannur", "palakkad", "alappuzha", "cherthala", "malappuram",
+  "pathanamthitta", "kasaragod", "idukki", "wayanad"
+];
+
+function normalized(value) {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function containsPhrase(value, phrase) {
+  return Boolean(phrase) && (" " + value + " ").includes(" " + phrase + " ");
+}
+
+function locationMatches(location, query) {
+  const place = normalized(location);
+  const term = normalized(query);
+  return containsPhrase(place, term) || (term === "kerala" &&
+    keralaCities.some(city => containsPhrase(place, city)));
+}
+
+function roleRank(job) {
+  const roles = phrases(preferences.roles);
+  if (!roles.length) return 1;
+  const title = normalized(job.title);
+  let rank = 0;
+  for (const role of roles) {
+    const term = normalized(role);
+    if (containsPhrase(title, term)) return 3;
+    const tokens = term.split(" ");
+    if (tokens.length > 1 && tokens.every(word => containsPhrase(title, word))) rank = 2;
+    if (term === "data quality analyst" && rank < 2) {
+      if (containsPhrase(title, "data quality") && /\b(associate|specialist|consultant)\b/.test(title)) rank = 1;
+      if (containsPhrase(title, "data analyst") &&
+          containsPhrase(normalized(job.description), "data quality")) rank = 1;
+    }
+  }
+  return rank;
+}
+
 function matches(job) {
   const description = [job.title, job.description, ...(job.tags || [])].join(" ").toLowerCase();
   const location = job.location.toLowerCase();
-  const title = job.title.toLowerCase();
   const work = /\bhybrid\b/i.test(location) ? "hybrid" : job.remote ? "remote" :
     /\bon[- ]?site\b/i.test(location) ? "onsite" : "";
-  const roles = phrases(preferences.roles);
   const locations = phrases(preferences.locations);
   const type = preferences.employment.toLowerCase().replace("-", " ");
   const employmentText = [...job.types, ...job.tags, job.description].join(" ").toLowerCase().replaceAll("-", " ");
   const age = Date.now() - Date.parse(job.date);
   return age >= 0 && age <= Number(preferences.days) * 86400000 &&
-    (!roles.length || roles.some(role => title.includes(role))) &&
-    (!locations.length || locations.some(place => location.includes(place))) &&
+    roleRank(job) > 0 &&
+    (!locations.length || locations.some(place => locationMatches(location, place))) &&
     (!preferences.work || preferences.work === work) &&
     (!type || employmentText.includes(type)) &&
     phrases(preferences.include).every(term => description.includes(term)) &&
@@ -53,13 +92,16 @@ function metadata(job) {
 }
 
 function renderJobs() {
-  const filtered = jobs.filter(matches);
+  const filtered = jobs.filter(matches).sort((a, b) => roleRank(b) - roleRank(a));
   const list = byId("jobs");
   list.replaceChildren();
   for (const job of filtered) {
     const card = element("article", "", "card");
     const info = element("div", "");
     info.append(element("h3", job.title), element("p", metadata(job), "muted"));
+    if (phrases(preferences.roles).length && roleRank(job) === 1) {
+      info.append(element("p", "Related role", "muted"));
+    }
     if (job.tags.length) {
       const tags = element("div", "", "tags");
       tags.append(...job.tags.slice(0, 4).map(tag => element("span", tag, "tag")));
@@ -75,8 +117,23 @@ function renderJobs() {
   byId("job-status").textContent = [count, updatedAt && "Feed updated " + new Date(updatedAt).toLocaleString(),
     unavailable.length && "Unavailable: " + unavailable.join(", ")].filter(Boolean).join(" · ");
   if (!filtered.length) list.append(element("p", jobs.length ?
-    "No listings match these filters. Try a wider date range or a broader location." :
+    "No listings in the current feeds match these filters. Try a wider date range." :
     "No listings are available right now. Use Refresh to try again.", "panel muted"));
+  if (!filtered.length && preferences.roles.trim() && phrases(preferences.locations).includes("kerala")) {
+    const search = new URL("https://in.indeed.com/jobs");
+    search.search = new URLSearchParams({
+      q: phrases(preferences.roles).map(role => '"' + role.replaceAll('"', "") + '"').join(" OR "),
+      l: "Kerala",
+      fromage: preferences.days
+    });
+    const link = element("a", "Search Indeed India for these roles in Kerala");
+    link.href = search.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const panel = element("p", "", "panel");
+    panel.append(link);
+    list.append(panel);
+  }
 }
 
 async function refresh() {
