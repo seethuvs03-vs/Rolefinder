@@ -8,7 +8,7 @@ Rolefinder runs on GitHub Pages. GitHub Actions builds the site and refreshes pu
 2. In the repository's **Settings → Pages**, under **Build and deployment**, choose **GitHub Actions** as the source.
 3. Open **Actions → Publish Rolefinder**, then choose **Run workflow**. Open the Pages URL from the deployment summary.
 
-GitHub Free supports Pages from public repositories. Publishing from a private personal repository requires GitHub Pro, and the Pages site is still publicly reachable. Neither option stores your resume or preferences in the repository or on the site host. Preferences are saved in the browser and the resume stays in memory in the current tab. The site fetches a public jobs snapshot. **Refresh** reloads that snapshot, whose update time appears above the results. GitHub may delay scheduled runs.
+GitHub Free supports Pages from public repositories. Publishing from a private personal repository requires GitHub Pro, and the Pages site is still publicly reachable. Neither option stores your resume or preferences in the repository or on the site host. Preferences are saved in the browser and the resume stays in memory in the current tab. The site loads a public jobs snapshot. **Save & find jobs** and **Refresh** also check Arbeitnow and Remote OK directly. Infopark updates through the scheduled snapshot. The app displays which sources were checked live and the snapshot timestamp. GitHub may delay scheduled runs.
 
 ## Use the app
 

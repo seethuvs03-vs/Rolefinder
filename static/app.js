@@ -15,6 +15,8 @@ let updatedAt;
 let resumeText = "";
 let selectedJob;
 let loading = false;
+let liveChecked = [];
+let cachedSources = [];
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -115,6 +117,8 @@ function renderJobs() {
   }
   const count = filtered.length === 1 ? "1 matching job" : filtered.length + " matching jobs";
   byId("job-status").textContent = [count, updatedAt && "Feed updated " + new Date(updatedAt).toLocaleString(),
+    liveChecked.length && "Checked live: " + liveChecked.join(", "),
+    cachedSources.length && "Using saved listings: " + cachedSources.join(", "),
     unavailable.length && "Unavailable: " + unavailable.join(", ")].filter(Boolean).join(" · ");
   if (!filtered.length) list.append(element("p", jobs.length ?
     "No listings in the current feeds match these filters. Try a wider date range." :
@@ -136,23 +140,100 @@ function renderJobs() {
   }
 }
 
-async function refresh() {
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    cache: "no-store",
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!response.ok) throw new Error("Could not read job feed.");
+  return response.json();
+}
+
+function plainText(value) {
+  const decoder = document.createElement("textarea");
+  decoder.innerHTML = (typeof value === "string" ? value : "")
+    .replace(/<(?:br\b[^>]*|\/p|\/li|\/div|\/h[1-6])\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, "").replaceAll("<", "&lt;");
+  return decoder.value.trim();
+}
+
+const liveSources = [
+  { name: "Arbeitnow", url: "https://www.arbeitnow.com/api/job-board-api" },
+  { name: "Remote OK", url: "https://remoteok.com/api" }
+];
+
+async function fetchLiveJobs(source) {
+  const payload = await fetchJson(source.url);
+  const remote = source.name === "Remote OK";
+  const rows = remote && Array.isArray(payload) ? payload.slice(1) : payload?.data;
+  if (!Array.isArray(rows)) throw new Error("Unrecognized job feed.");
+  return rows.flatMap(row => {
+    const title = plainText(row?.title || row?.position);
+    const timestamp = Number(row?.created_at ?? row?.epoch) * 1000;
+    if (!title || !Number.isFinite(timestamp) || timestamp <= 0 ||
+        timestamp > Date.now() || typeof row.url !== "string" ||
+        !URL.canParse(row.url) || new URL(row.url).protocol !== "https:") return [];
+    return [{
+      title,
+      company: plainText(row.company_name || row.company),
+      location: plainText(row.location),
+      remote: remote || row.remote === true,
+      types: Array.isArray(row.job_types) ? row.job_types.filter(type => typeof type === "string") : [],
+      tags: Array.isArray(row.tags) ? row.tags.filter(tag => typeof tag === "string") : [],
+      description: plainText(row.description).slice(0, 25000),
+      date: new Date(timestamp).toISOString(),
+      url: row.url,
+      source: source.name
+    }];
+  });
+}
+
+async function refresh(checkLive = false) {
   if (loading) return;
   loading = true;
-  byId("refresh").disabled = true;
-  byId("job-status").textContent = "Loading job listings…";
+  const refreshButton = byId("refresh");
+  const searchButton = form.querySelector('button[type="submit"]');
+  refreshButton.disabled = true;
+  searchButton.disabled = true;
+  byId("job-status").textContent = checkLive ? "Checking job sources…" : "Loading job listings…";
   try {
-    const response = await fetch(new URL("./jobs.json", import.meta.url), { cache: "no-store" });
-    if (!response.ok) throw new Error();
-    const data = await response.json();
-    jobs = data.jobs;
-    unavailable = data.unavailable;
-    updatedAt = data.updatedAt;
+    const [snapshot, ...results] = await Promise.allSettled([
+      fetchJson(new URL("./jobs.json", import.meta.url)),
+      ...(checkLive ? liveSources.map(fetchLiveJobs) : [])
+    ]);
+    if (snapshot.status === "fulfilled" && Array.isArray(snapshot.value?.jobs)) {
+      jobs = snapshot.value.jobs;
+      unavailable = snapshot.value.unavailable || [];
+      updatedAt = snapshot.value.updatedAt;
+    }
+    const current = new Map();
+    cachedSources = [];
+    const missing = new Set(unavailable);
+    for (const [index, result] of results.entries()) {
+      const { name } = liveSources[index];
+      if (result.status === "fulfilled") {
+        current.set(name, result.value);
+        missing.delete(name);
+      } else if (jobs.some(job => job.source === name)) {
+        cachedSources.push(name);
+      } else {
+        missing.add(name);
+      }
+    }
+    unavailable = [...missing];
+    liveChecked = [...current.keys()];
+    const merged = [...jobs.filter(job => !current.has(job.source)), ...current.values()].flat();
+    const unique = new Map(merged.map(job => [job.url, job]));
+    jobs = [...unique.values()].sort((a, b) => b.date.localeCompare(a.date));
     renderJobs();
-  } catch {
-    byId("job-status").textContent = "Could not refresh listings. Please try again.";
+    if (snapshot.status === "rejected") {
+      byId("job-status").textContent += " · Published feed could not be refreshed.";
+    }
   } finally {
-    byId("refresh").disabled = false;
+    refreshButton.disabled = false;
+    searchButton.disabled = false;
     loading = false;
   }
 }
@@ -234,10 +315,10 @@ form.onsubmit = event => {
   } catch {
     // Preferences still apply to the current page.
   }
-  renderJobs();
+  refresh(true);
   byId("results").scrollIntoView({ block: "start", behavior: "smooth" });
 };
-byId("refresh").onclick = refresh;
+byId("refresh").onclick = () => refresh(true);
 async function readResume(file) {
   const extension = file.name.split(".").pop().toLowerCase();
   if (extension === "txt") return file.text();
