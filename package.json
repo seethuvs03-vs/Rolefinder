@@ -1,0 +1,18 @@
+{
+  "name": "rolefinder",
+  "version": "1.0.0",
+  "description": "Rolefinder is a personal job search app. Save preferences, browse recent openings, upload a resume, select a job, and review and export the tailored draft.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "docx": "9.15.4",
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "6.5.438"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

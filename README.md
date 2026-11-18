@@ -1,23 +1,18 @@
 # Rolefinder
 
-Rolefinder is a personal job search app. Save preferences, browse recent openings, upload a resume, select a job, and review and export the tailored draft.
+Rolefinder runs on GitHub Pages. GitHub Actions builds the site and refreshes public job data every six hours. A computer or external server does not need to stay on.
 
-## Run
+## Deploy on your GitHub account
 
-Use Python 3.12.
+1. Push this project to the `main` branch of your GitHub repository.
+2. In the repository's **Settings → Pages**, under **Build and deployment**, choose **GitHub Actions** as the source.
+3. Open **Actions → Publish Rolefinder**, then choose **Run workflow**. Open the Pages URL from the deployment summary.
 
-```sh
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-flask --app app run
-```
+GitHub Free supports Pages from public repositories. Publishing from a private personal repository requires GitHub Pro, and the Pages site is still publicly reachable. Neither option stores your resume or preferences in the repository or on the site host. Preferences are saved in the browser and the resume stays in memory in the current tab. The site fetches a public jobs snapshot. **Refresh** reloads that snapshot, whose update time appears above the results. GitHub may delay scheduled runs.
 
-Open http://127.0.0.1:5000. To run on Render, connect this repository via a Blueprint and deploy the included render.yaml. In the Render service environment, retrieve or replace its generated APP_PASSWORD. Open the HTTPS service URL and sign in as owner with that password. A hosting account and plan are required. GitHub Actions runs smoke checks on pushes and pull requests. The hosted app loads current listings when opened or refreshed.
+## Use the app
 
-## How it works
-
-- Search the most recent records returned by Arbeitnow and Remote OK. Coverage varies by country and occupational field. Comma-separated titles and locations use OR. All required terms must appear and any excluded term removes a listing. Explicit work or location filters may hide jobs with missing metadata.
-- Text-based PDF, DOCX and UTF-8 TXT uploads are supported. The server extracts text in the request, and the browser holds it for the current tab session. Preferences are saved in browser storage.
-- Tailoring uses keyword overlap to reorder existing bullets within contiguous bullet groups. Listing tags and requirement cues are shown for manual review. The extracted text may need layout or line-break edits. No AI key is required.
-- Download the edited draft as DOCX, or select Print / Save PDF. Use the original listing link to apply.
+- Save titles, locations, work arrangements, employment types, and keyword filters. Comma-separated titles and locations use OR. All required terms must appear and any excluded term removes a listing.
+- Listings come from Arbeitnow and Remote OK. Coverage varies by country and occupation. Location and arrangement filters use metadata supplied by the sources.
+- Upload a text-based PDF, DOCX, or TXT resume and choose a job. Tailoring reorders existing bullets based on keyword overlap and highlights requirements for manual review. You can edit the extracted draft before downloading DOCX or using **Print / Save PDF**.
+- Use the original listing to apply.

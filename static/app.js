@@ -1,3 +1,9 @@
+import { Document, HeadingLevel, Packer, Paragraph } from "docx";
+import mammoth from "mammoth";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+
+GlobalWorkerOptions.workerSrc = new URL("./pdf.worker.min.mjs", import.meta.url).href;
+
 const byId = id => document.getElementById(id);
 const form = byId("preferences");
 const dialog = byId("detail");
@@ -5,6 +11,7 @@ const draft = byId("draft");
 let preferences = Object.fromEntries(new FormData(form));
 let jobs = [];
 let unavailable = [];
+let updatedAt;
 let resumeText = "";
 let selectedJob;
 let loading = false;
@@ -65,7 +72,8 @@ function renderJobs() {
     list.append(card);
   }
   const count = filtered.length === 1 ? "1 matching job" : filtered.length + " matching jobs";
-  byId("job-status").textContent = count + (unavailable.length ? " · Unavailable: " + unavailable.join(", ") : "");
+  byId("job-status").textContent = [count, updatedAt && "Feed updated " + new Date(updatedAt).toLocaleString(),
+    unavailable.length && "Unavailable: " + unavailable.join(", ")].filter(Boolean).join(" · ");
   if (!filtered.length) list.append(element("p", jobs.length ?
     "No listings match these filters. Try a wider date range or a broader location." :
     "No listings are available right now. Use Refresh to try again.", "panel muted"));
@@ -77,11 +85,12 @@ async function refresh() {
   byId("refresh").disabled = true;
   byId("job-status").textContent = "Loading job listings…";
   try {
-    const response = await fetch("/api/jobs");
+    const response = await fetch(new URL("./jobs.json", import.meta.url), { cache: "no-store" });
     if (!response.ok) throw new Error();
     const data = await response.json();
     jobs = data.jobs;
     unavailable = data.unavailable;
+    updatedAt = data.updatedAt;
     renderJobs();
   } catch {
     byId("job-status").textContent = "Could not refresh listings. Please try again.";
@@ -172,6 +181,46 @@ form.onsubmit = event => {
   byId("results").scrollIntoView({ block: "start", behavior: "smooth" });
 };
 byId("refresh").onclick = refresh;
+async function readResume(file) {
+  const extension = file.name.split(".").pop().toLowerCase();
+  if (extension === "txt") return file.text();
+  if (extension === "docx") {
+    const result = await mammoth.convertToHtml(
+      { arrayBuffer: await file.arrayBuffer() },
+      { convertImage: mammoth.images.imgElement(() => ({})) }
+    );
+    const content = document.createElement("template");
+    content.innerHTML = result.value;
+    return [...content.content.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li")].flatMap(block => {
+      if (block.tagName !== "LI" && block.closest("li")) return [];
+      const copy = block.cloneNode(true);
+      for (const list of copy.querySelectorAll("ol,ul")) list.remove();
+      for (const breakElement of copy.querySelectorAll("br")) breakElement.replaceWith("\n");
+      const text = copy.textContent.trim();
+      if (!text) return [];
+      return block.tagName === "LI" ? "• " + text.replaceAll("\n", " ") : text;
+    }).join("\n");
+  }
+  if (extension === "pdf") {
+    const task = getDocument({ data: await file.arrayBuffer(), isEvalSupported: false });
+    try {
+      const pdf = await task.promise;
+      if (pdf.numPages > 30) throw new Error("Choose a PDF of up to 30 pages.");
+      const pages = [];
+      for (let number = 1; number <= pdf.numPages; number++) {
+        const page = await pdf.getPage(number);
+        const content = await page.getTextContent();
+        pages.push(content.items.map(item => "str" in item ?
+          item.str + (item.hasEOL ? "\n" : "") : "").join(""));
+      }
+      return pages.join("\n");
+    } finally {
+      await task.destroy();
+    }
+  }
+  throw new Error("Choose a PDF, DOCX or TXT resume.");
+}
+
 byId("resume-file").onchange = async event => {
   const input = event.target;
   const file = input.files[0];
@@ -180,12 +229,11 @@ byId("resume-file").onchange = async event => {
   const status = byId("resume-status");
   status.textContent = "Reading resume…";
   try {
-    const data = new FormData();
-    data.append("resume", file);
-    const response = await fetch("/api/resume", { method: "POST", body: data });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
-    resumeText = result.text;
+    if (file.size > 5 * 1024 * 1024) throw new Error("Choose a resume up to 5 MB.");
+    const text = (await readResume(file)).trim();
+    if (!text) throw new Error("No selectable text was found. Try a text-based PDF or DOCX.");
+    if (text.length > 50000) throw new Error("The resume exceeds 50,000 characters.");
+    resumeText = text;
     status.textContent = file.name + " is ready for this session.";
   } catch (error) {
     status.textContent = (error.message || "Could not read the resume.") +
@@ -212,12 +260,19 @@ byId("download").onclick = async () => {
   const button = byId("download");
   button.disabled = true;
   try {
-    const response = await fetch("/api/export", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: draft.value })
+    const text = draft.value.trim();
+    if (!text || text.length > 60000) throw new Error("Provide a draft of up to 60,000 characters.");
+    const children = text.split(/\r?\n/).map(line => {
+      if (/^\s*[-–•●▪*]\s+/.test(line)) {
+        return new Paragraph({ text: line.replace(/^\s*[-–•●▪*]\s+/, ""), bullet: { level: 0 } });
+      }
+      if (line.length < 65 && /[A-Z]/.test(line) && line === line.toUpperCase()) {
+        return new Paragraph({ text: line, heading: HeadingLevel.HEADING_1 });
+      }
+      return new Paragraph({ text: line });
     });
-    if (!response.ok) throw new Error((await response.json()).error);
-    const url = URL.createObjectURL(await response.blob());
+    const file = new Document({ sections: [{ children }] });
+    const url = URL.createObjectURL(await Packer.toBlob(file));
     const link = document.createElement("a");
     link.href = url;
     link.download = "tailored-resume.docx";
