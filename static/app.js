@@ -47,6 +47,10 @@ function containsPhrase(value, phrase) {
 function locationMatches(location, query) {
   const place = normalized(location);
   const term = normalized(query);
+  if (["uae", "u a e", "united arab emirates"].includes(term)) {
+    return ["united arab emirates", "uae", "u a e", "dubai", "abu dhabi", "sharjah",
+      "ajman", "ras al khaimah", "fujairah", "umm al quwain"].some(alias => containsPhrase(place, alias));
+  }
   return containsPhrase(place, term) || (term === "kerala" &&
     keralaCities.some(city => containsPhrase(place, city)));
 }
@@ -73,8 +77,8 @@ function roleRank(job) {
 function matches(job) {
   const description = [job.title, job.description, ...(job.tags || [])].join(" ").toLowerCase();
   const location = job.location.toLowerCase();
-  const work = /\bhybrid\b/i.test(location) ? "hybrid" : job.remote ? "remote" :
-    /\bon[- ]?site\b/i.test(location) ? "onsite" : "";
+  const work = job.work || (/\bhybrid\b/i.test(location) ? "hybrid" : job.remote ? "remote" :
+    /\bon[- ]?site\b/i.test(location) ? "onsite" : "");
   const locations = phrases(preferences.locations);
   const type = preferences.employment.toLowerCase().replace("-", " ");
   const employmentText = [...job.types, ...job.tags, job.description].join(" ").toLowerCase().replaceAll("-", " ");
@@ -238,7 +242,7 @@ async function refresh(checkLive = false) {
   }
 }
 
-function openJob(job) {
+async function openJob(job) {
   selectedJob = job;
   const title = element("h2", job.title);
   title.id = "detail-title";
@@ -247,12 +251,30 @@ function openJob(job) {
   link.href = job.url;
   link.target = "_blank";
   link.rel = "noopener noreferrer";
-  byId("job-detail").replaceChildren(title, element("p", metadata(job), "muted"),
-    element("div", job.description || "No description was provided by the source.", "description"), link);
+  const description = element("div", job.description ||
+    (job.descriptionUrl ? "Loading the employer’s description…" : "No description was provided by the source."),
+    "description");
+  byId("job-detail").replaceChildren(title, element("p", metadata(job), "muted"), description, link);
   byId("draft-section").hidden = true;
   byId("detail-status").textContent = resumeText ? "" : "Upload a resume to generate a tailored draft.";
   byId("tailor").disabled = !resumeText || !job.description;
   dialog.showModal();
+  if (job.description || !job.descriptionUrl) return;
+  try {
+    const detail = await fetchJson(job.descriptionUrl);
+    const sections = detail.jobAd?.sections;
+    job.description = [sections?.jobDescription, sections?.qualifications, sections?.additionalInformation]
+      .map(section => plainText(section?.text)).filter(Boolean).join("\n\n").slice(0, 25000);
+  } catch {
+    if (selectedJob === job && dialog.open) {
+      description.textContent = "The employer’s description could not be loaded. Open the original listing.";
+    }
+    return;
+  }
+  if (selectedJob === job && dialog.open) {
+    description.textContent = job.description || "No description was provided by the source.";
+    byId("tailor").disabled = !resumeText || !job.description;
+  }
 }
 
 const stopWords = new Set(("about across also among and are based built can could each for from great have into job join looking must need our over people role should such than that the their them then there these they this through use using want was were what when where which who will with work would year years you your").split(" "));

@@ -1,7 +1,7 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from html import unescape
 from pathlib import Path
@@ -14,6 +14,17 @@ SOURCES = {
     "Arbeitnow": "https://www.arbeitnow.com/api/job-board-api",
     "Remote OK": "https://remoteok.com/api",
 }
+EMPLOYER_BOARDS = {
+    "AccorHotel": ("in", "ae", "qa"),
+    "AECOM2": ("in", "ae", "qa"),
+    "TurnerTownsend": ("in", "ae", "qa"),
+    "BoschGroup": ("in",),
+    "NielsenIQ": ("in",),
+    "Endava": ("in",),
+    "BESIX": ("ae",),
+}
+COUNTRY_NAMES = {"in": "India", "ae": "United Arab Emirates", "qa": "Qatar"}
+SMARTRECRUITERS_API = "https://api.smartrecruiters.com/v1/companies"
 INFOPARK = "https://infopark.in/companies-job"
 KERALA_TZ = ZoneInfo("Asia/Kolkata")
 HEADERS = {"User-Agent": "Rolefinder/1.0 (personal job search)"}
@@ -96,7 +107,7 @@ def get_infopark_jobs():
             jobs[url] = {
                 "title": title,
                 "company": cells[2].get_text(strip=True),
-                "location": "Kerala (Infopark)",
+                "location": "Kerala, India (Infopark)",
                 "remote": False,
                 "types": [],
                 "tags": [],
@@ -109,18 +120,66 @@ def get_infopark_jobs():
         return list(pool.map(infopark_description, jobs.values()))
 
 
+def get_employer_jobs(board, country):
+    endpoint = f"{SMARTRECRUITERS_API}/{board}/postings"
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
+    jobs = []
+    for offset in (0, 100):
+        response = requests.get(endpoint, params={"country": country, "limit": 100, "offset": offset},
+                                headers=HEADERS, timeout=8)
+        response.raise_for_status()
+        rows = response.json()["content"]
+        for row in rows:
+            try:
+                location = row["location"]
+                if location["country"].lower() != country or row["visibility"] != "PUBLIC":
+                    continue
+                posted = datetime.fromisoformat(row["releasedDate"]).astimezone(timezone.utc)
+                identifier = row["id"]
+                if not cutoff <= posted <= now or not re.fullmatch(r"\d+", identifier):
+                    continue
+                country_name = COUNTRY_NAMES[country]
+                label = ", ".join(dict.fromkeys(filter(None, [location.get("city"),
+                                                             location.get("region"), country_name])))
+                employment = row.get("typeOfEmployment", {}).get("label")
+                work = "hybrid" if location.get("hybrid") else "remote" if location.get("remote") else "onsite"
+                jobs.append({
+                    "title": clean(row["name"]),
+                    "company": clean(row["company"]["name"]),
+                    "location": label,
+                    "remote": work == "remote",
+                    "work": work,
+                    "types": [employment] if employment else [],
+                    "tags": [],
+                    "description": "",
+                    "descriptionUrl": f"{endpoint}/{identifier}",
+                    "date": posted.isoformat(),
+                    "url": f"https://jobs.smartrecruiters.com/{board}/{identifier}",
+                    "source": "Employer careers",
+                })
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+        if len(rows) < 100:
+            break
+    return jobs
+
+
 def collect_jobs():
     results, errors = [], []
-    with ThreadPoolExecutor(max_workers=len(SOURCES) + 1) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         pending = {source: pool.submit(get_jobs, source, url) for source, url in SOURCES.items()}
         pending["Infopark Kerala"] = pool.submit(get_infopark_jobs)
+        for board, countries in EMPLOYER_BOARDS.items():
+            for country in countries:
+                pending[f"{board} ({COUNTRY_NAMES[country]})"] = pool.submit(get_employer_jobs, board, country)
         for source, future in pending.items():
             try:
                 results.extend(future.result())
             except (requests.RequestException, KeyError, TypeError, ValueError):
                 errors.append(source)
     results.sort(key=lambda job: job["date"], reverse=True)
-    if len(errors) == len(SOURCES) + 1:
+    if len(errors) == len(pending):
         raise RuntimeError("All job feeds are unavailable.")
     unique = {}
     for job in results:
