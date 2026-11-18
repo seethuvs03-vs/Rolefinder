@@ -1,4 +1,4 @@
-import { Document, HeadingLevel, Packer, Paragraph } from "docx";
+import { docxSummary, textSummary } from "./resume.js";
 import mammoth from "mammoth";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 
@@ -12,7 +12,8 @@ let preferences = Object.fromEntries(new FormData(form));
 let jobs = [];
 let unavailable = [];
 let updatedAt;
-let resumeText = "";
+let resume;
+let activeDraft;
 let selectedJob;
 let loading = false;
 let liveChecked = [];
@@ -256,8 +257,8 @@ async function openJob(job) {
     "description");
   byId("job-detail").replaceChildren(title, element("p", metadata(job), "muted"), description, link);
   byId("draft-section").hidden = true;
-  byId("detail-status").textContent = resumeText ? "" : "Upload a resume to generate a tailored draft.";
-  byId("tailor").disabled = !resumeText || !job.description;
+  byId("detail-status").textContent = resume ? "" : "Upload a resume to generate a tailored draft.";
+  byId("tailor").disabled = !resume || !job.description;
   dialog.showModal();
   if (job.description || !job.descriptionUrl) return;
   try {
@@ -273,7 +274,7 @@ async function openJob(job) {
   }
   if (selectedJob === job && dialog.open) {
     description.textContent = job.description || "No description was provided by the source.";
-    byId("tailor").disabled = !resumeText || !job.description;
+    byId("tailor").disabled = !resume || !job.description;
   }
 }
 
@@ -284,26 +285,25 @@ function words(text) {
     .filter(word => word.length > 2 && !stopWords.has(word));
 }
 
-function tailorResume(text, job) {
+function tailorResume({ text, summary }, job) {
   const terms = new Map();
   for (const word of words(job.description)) terms.set(word, Math.min((terms.get(word) || 0) + 1, 4));
   for (const word of words(job.title + " " + job.tags.join(" "))) terms.set(word, (terms.get(word) || 0) + 4);
   const score = line => [...new Set(words(line))].reduce((sum, word) => sum + (terms.get(word) || 0), 0);
-  const lines = text.split(/\r?\n/);
+  const original = summary?.original || "";
+  const sentences = [...new Intl.Segmenter("en", { granularity: "sentence" }).segment(original)]
+    .map(({ segment }) => segment.trim());
   const bullet = /^\s*[-–•●▪*]\s+/;
-  const relevant = new Set();
-  for (let index = 0; index < lines.length;) {
-    if (!bullet.test(lines[index])) {
-      index++;
-      continue;
-    }
-    let end = index;
-    while (end < lines.length && bullet.test(lines[end])) end++;
-    const sorted = lines.slice(index, end).sort((a, b) => score(b) - score(a));
-    lines.splice(index, sorted.length, ...sorted);
-    for (const line of sorted) if (score(line) > 0) relevant.add(line.replace(bullet, ""));
-    index = end;
+  const evidence = text.split(/\r?\n/).filter(line => bullet.test(line))
+    .map(line => line.replace(bullet, "").trim())
+    .filter(line => line.length >= 25 && line.length <= 180 && score(line) > 0 &&
+      !original.toLowerCase().includes(line.toLowerCase().replace(/[.!?]$/, "")))
+    .sort((a, b) => score(b) - score(a))[0];
+  if (evidence) {
+    sentences.push(/[.!?]$/.test(evidence) ? evidence : evidence + ".");
   }
+  sentences.sort((a, b) => score(b) - score(a));
+  const tailored = sentences.slice(0, Math.max(1, sentences.length - Number(Boolean(evidence && original)))).join(" ");
   const resumeWords = new Set(words(text));
   const missingTags = job.tags.filter(tag => {
     const tokens = words(tag);
@@ -313,8 +313,7 @@ function tailorResume(text, job) {
     /\b(required|must have|minimum|certification|degree|years of experience)\b/i.test(line) &&
     line.length <= 260 && words(line).some(word => !resumeWords.has(word)));
   return {
-    text: lines.join("\n"),
-    relevantCount: relevant.size,
+    text: tailored,
     needsReview: [...new Set([...missingTags, ...requirements])].slice(0, 6)
   };
 }
@@ -390,14 +389,17 @@ byId("resume-file").onchange = async event => {
   status.textContent = "Reading resume…";
   try {
     if (file.size > 5 * 1024 * 1024) throw new Error("Choose a resume up to 5 MB.");
-    const text = (await readResume(file)).trim();
-    if (!text) throw new Error("No selectable text was found. Try a text-based PDF or DOCX.");
+    const text = await readResume(file);
+    if (!text.trim()) throw new Error("No selectable text was found. Try a text-based PDF or DOCX.");
     if (text.length > 50000) throw new Error("The resume exceeds 50,000 characters.");
-    resumeText = text;
+    const extension = file.name.split(".").pop().toLowerCase();
+    const editableSummary = extension === "docx" ? await docxSummary(await file.arrayBuffer()) : textSummary(text);
+    const summary = editableSummary || textSummary(text);
+    resume = { text, extension, summary, editableSummary };
     status.textContent = file.name + " is ready for this session.";
   } catch (error) {
     status.textContent = (error.message || "Could not read the resume.") +
-      (resumeText ? " Your previous resume is still active." : "");
+      (resume ? " Your previous resume is still active." : "");
   } finally {
     input.value = "";
     input.disabled = false;
@@ -405,11 +407,16 @@ byId("resume-file").onchange = async event => {
 };
 
 byId("tailor").onclick = () => {
-  const result = tailorResume(resumeText, selectedJob);
+  const result = tailorResume(resume, selectedJob);
+  activeDraft = resume;
   draft.value = result.text;
-  byId("detail-status").textContent = result.relevantCount ?
-    "Prioritized matching bullets within their original sections." :
-    "No matching bullets were detected. Review and edit the extracted resume below.";
+  const canDownload = resume.extension !== "pdf" && Boolean(resume.editableSummary);
+  byId("download").hidden = !canDownload;
+  byId("download").textContent = resume.extension === "docx" ? "Download DOCX" : "Download TXT";
+  byId("detail-status").textContent = !result.text ?
+    "Enter a summary based on your experience, then copy it into the original resume." : canDownload ?
+    "Review the summary before downloading your resume." :
+    "Copy your edited summary into the original resume to preserve its layout.";
   byId("gaps").textContent = result.needsReview.length ?
     "Check these listing terms or requirements against your experience: " + result.needsReview.join(" · ") : "";
   byId("draft-section").hidden = false;
@@ -420,22 +427,15 @@ byId("download").onclick = async () => {
   const button = byId("download");
   button.disabled = true;
   try {
-    const text = draft.value.trim();
-    if (!text || text.length > 60000) throw new Error("Provide a draft of up to 60,000 characters.");
-    const children = text.split(/\r?\n/).map(line => {
-      if (/^\s*[-–•●▪*]\s+/.test(line)) {
-        return new Paragraph({ text: line.replace(/^\s*[-–•●▪*]\s+/, ""), bullet: { level: 0 } });
-      }
-      if (line.length < 65 && /[A-Z]/.test(line) && line === line.toUpperCase()) {
-        return new Paragraph({ text: line, heading: HeadingLevel.HEADING_1 });
-      }
-      return new Paragraph({ text: line });
-    });
-    const file = new Document({ sections: [{ children }] });
-    const url = URL.createObjectURL(await Packer.toBlob(file));
+    const summary = draft.value.trim().replace(/\s*\r?\n\s*/g, " ");
+    if (!summary || summary.length > 60000) throw new Error("Enter a summary of up to 60,000 characters.");
+    const { extension } = activeDraft;
+    const updatedResume = await activeDraft.editableSummary.replace(summary);
+    const file = extension === "docx" ? updatedResume : new Blob([updatedResume], { type: "text/plain" });
+    const url = URL.createObjectURL(file);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "tailored-resume.docx";
+    link.download = "tailored-resume." + extension;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) {
@@ -443,9 +443,5 @@ byId("download").onclick = async () => {
   } finally {
     button.disabled = false;
   }
-};
-byId("print").onclick = () => {
-  byId("printout").textContent = draft.value;
-  window.print();
 };
 refresh();
